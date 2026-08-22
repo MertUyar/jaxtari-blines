@@ -74,24 +74,24 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
 
 class Pixel_Actor_Discrete(nn.Module):
     action_dim: int
-    configs: dict
+    #configs: dict
 
     @nn.compact
-    def __call__(self, x, key, train=False):
+    def __call__(self, x, key,): #train=False):
         x = jnp.transpose(x, (0, 2, 3, 1))
         x = x.astype(jnp.float32) / 255.0
         x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
+        #x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
         x = nn.relu(x)
         x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
+        #x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
         x = nn.relu(x)
         x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
+        #x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0)  )(x)
-        x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
+        #x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
         x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
@@ -126,15 +126,15 @@ class Pixel_Critic(nn.Module):
 
 class MLP_Actor_Discrete(nn.Module):
     action_dim: int
-    configs: dict
+    #configs: dict
 
     @nn.compact
-    def __call__(self, x, key, train=False):
+    def __call__(self, x, key,): # train=False):
         x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
+        #x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
         x = nn.relu(x)
         x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
+        #x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
         x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
@@ -250,11 +250,17 @@ def single_run(config: dict):
     critic_variables = critic_net.init(qf_key, dummy_obs, train=True)
     actor_variables = actor_net.init(actor_key, dummy_obs, actor_key2, train=True)
 
-    actor_state = CrossQTrainState.create(
+    #actor_state = CrossQTrainState.create(
+    #    apply_fn=actor_net.apply,
+    #    params=actor_variables["params"],
+    #    batch_stats=actor_variables["batch_stats"],
+    #    tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4, b1=0.5),
+    #)
+
+    actor_state = TrainState.create(
         apply_fn=actor_net.apply,
-        params=actor_variables["params"],
-        batch_stats=actor_variables["batch_stats"],
-        tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4, b1=0.5),
+        params=actor_net.init(actor_key, dummy_obs, actor_key2),
+        tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4),
     )
 
     qf_state = CrossQTrainState.create(
@@ -300,9 +306,12 @@ def single_run(config: dict):
             actor_state, buffer_state, env_state, obs, global_step, rng = carry
             rng, action_rng, actor_sample_key = jax.random.split(rng, 3)
             action_sample_keys = jax.random.split(action_rng, num_envs)
-            p_actor = {"params": actor_state.params, "batch_stats": actor_state.batch_stats}
+
+            #p_actor = {"params": actor_state.params, "batch_stats": actor_state.batch_stats}
             random_actions = jax.vmap(env.action_space().sample)(action_sample_keys)
-            samples, _, _ = actor_state.apply_fn(p_actor, obs, actor_sample_key, train=False)
+            #samples, _, _ = actor_state.apply_fn(p_actor, obs, actor_sample_key, train=False)
+            samples, _, _ = actor_state.apply_fn(actor_state.params, obs, actor_sample_key)
+
 
             actions = jnp.where(global_step < learning_starts, random_actions, samples)
             next_obs, next_env_state, rewards, next_done, info = vmap_step(env_state, actions)
@@ -336,8 +345,10 @@ def single_run(config: dict):
             b_don = batch.first.done
             b_nobs = batch.second.obs
 
-            p_actor = {"params": u_actor_state.params, "batch_stats": u_actor_state.batch_stats}
-            (_, next_state_log_pi, next_state_action_probs), _ = u_actor_state.apply_fn(p_actor, b_nobs, sample_key2, train=True, mutable=["batch_stats"])
+            #p_actor = {"params": u_actor_state.params, "batch_stats": u_actor_state.batch_stats}
+            #(_, next_state_log_pi, next_state_action_probs), _ = u_actor_state.apply_fn(p_actor, b_nobs, sample_key2, train=True, mutable=["batch_stats"])
+
+            _, next_state_log_pi, next_state_action_probs = u_actor_state.apply_fn(u_actor_state.params, b_nobs, sample_key2)
 
 
             def qf_loss_fn(qf_params, qf_state):
@@ -358,16 +369,18 @@ def single_run(config: dict):
 
             def actor_loss_fn(actor_params, actor_state):
                 p_critic = {"params": new_qf_state.params, "batch_stats": new_qf_state.batch_stats}
-                p_actor = {"params": actor_params, "batch_stats": actor_state.batch_stats}
+            #    p_actor = {"params": actor_params, "batch_stats": actor_state.batch_stats}
                 new_qf_preds, _ = new_qf_state.apply_fn(p_critic, b_obs, train=True, mutable=["batch_stats"])
-                (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, sample_key3, train=True, mutable=["batch_stats"])
+            #    (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, sample_key3, train=True, mutable=["batch_stats"])
+                _, log_pi, action_probs = actor_state.apply_fn(actor_params, b_obs, sample_key3)
+
                 min_qf_values = jax.lax.stop_gradient(jnp.min(new_qf_preds, axis=0))
                 actor_loss = jnp.sum((action_probs * ((alpha * log_pi) - min_qf_values)), axis=-1).mean()
                 return actor_loss, (log_pi, action_probs, new_actor_batch_stats)
             
             (actor_loss, (log_pi, action_probs, new_actor_batch_stats)), actor_grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(u_actor_state.params, u_actor_state)
             new_actor_state = u_actor_state.apply_gradients(grads=actor_grads)
-            new_actor_state = new_actor_state.replace(batch_stats=new_actor_batch_stats["batch_stats"])
+            # new_actor_state = new_actor_state.replace(batch_stats=new_actor_batch_stats["batch_stats"])
         
 
             if config.get("AUTOTUNE", True):
@@ -406,8 +419,10 @@ def single_run(config: dict):
                     flax.serialization.to_bytes(
                         [
                             config,
-                            {"params": crossq_carry[0].params, "batch_stats": crossq_carry[0].batch_stats},
-                            {"params": crossq_carry[1].params, "batch_stats": crossq_carry[1].batch_stats}
+                            crossq_carry[0]
+                            crossq_carry[1]
+                            #{"params": crossq_carry[0].params, "batch_stats": crossq_carry[0].batch_stats},
+                            #{"params": crossq_carry[1].params, "batch_stats": crossq_carry[1].batch_stats}
                          ]
                     )
                 )
