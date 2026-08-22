@@ -248,7 +248,7 @@ def single_run(config: dict):
 
     dummy_obs = jnp.zeros((1, *obs_shape))
     critic_variables = critic_net.init(qf_key, dummy_obs, train=True)
-    actor_variables = actor_net.init(actor_key, dummy_obs, actor_key2, train=True)
+    # actor_variables = actor_net.init(actor_key, dummy_obs, actor_key2, train=True)
 
     #actor_state = CrossQTrainState.create(
     #    apply_fn=actor_net.apply,
