@@ -376,9 +376,9 @@ def single_run(config: dict):
 
                 min_qf_values = jax.lax.stop_gradient(jnp.min(new_qf_preds, axis=0))
                 actor_loss = jnp.sum((action_probs * ((alpha * log_pi) - min_qf_values)), axis=-1).mean()
-                return actor_loss, (log_pi, action_probs, new_actor_batch_stats)
+                return actor_loss, (log_pi, action_probs) #, new_actor_batch_stats)
             
-            (actor_loss, (log_pi, action_probs, new_actor_batch_stats)), actor_grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(u_actor_state.params, u_actor_state)
+            (actor_loss, (log_pi, action_probs)), actor_grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(u_actor_state.params, u_actor_state)
             new_actor_state = u_actor_state.apply_gradients(grads=actor_grads)
             # new_actor_state = new_actor_state.replace(batch_stats=new_actor_batch_stats["batch_stats"])
         
