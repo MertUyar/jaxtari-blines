@@ -419,7 +419,7 @@ def single_run(config: dict):
                     flax.serialization.to_bytes(
                         [
                             config,
-                            crossq_carry[0]
+                            crossq_carry[0],
                             crossq_carry[1]
                             #{"params": crossq_carry[0].params, "batch_stats": crossq_carry[0].batch_stats},
                             #{"params": crossq_carry[1].params, "batch_stats": crossq_carry[1].batch_stats}
