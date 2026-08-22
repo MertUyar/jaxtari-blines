@@ -238,10 +238,10 @@ def single_run(config: dict):
     key, actor_key, actor_key2, qf_key = jax.random.split(key, 4)
     
     if config.get("PIXEL_BASED", True):
-        actor_net = Pixel_Actor_Discrete(action_dim=action_dim, configs=config)
+        actor_net = Pixel_Actor_Discrete(action_dim=action_dim) #, configs=config)
         critic_net = TwinCritic(action_dim=action_dim, configs=config)
     else:
-        actor_net = MLP_Actor_Discrete(action_dim=action_dim, configs=config)
+        actor_net = MLP_Actor_Discrete(action_dim=action_dim) #, configs=config)
         critic_net = TwinCritic(action_dim=action_dim, configs=config)
 
     
