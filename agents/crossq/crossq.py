@@ -112,7 +112,7 @@ class BatchRenorm(nn.Module):
         )
 
         # calculating amount of gradient steps
-        step = (global_steps - self.configs.get("LEARNING_STARTS", 20000)) // ((self.configs.get("NUM_ENVS", 1) * self.configs.get("TRAIN_FREQUENCY", 4)) // self.config.get("GRADIENT_STEPS", 1))
+        step = (global_steps - self.configs.get("LEARNING_STARTS", 20000)) // ((self.configs.get("NUM_ENVS", 1) * self.configs.get("TRAIN_FREQUENCY", 4)) // self.configs.get("GRADIENT_STEPS", 1))
 
         # Feature shape
         feature_shape = (x.shape[axis],)
@@ -493,7 +493,7 @@ def single_run(config: dict):
         Pixel_Critic if config.get("PIXEL_BASED", True) else MLP_Critic,
         variable_axes={"params": 0, "batch_stats": 0},
         split_rngs={"params": True},
-        in_axes=(None, None, None),
+        in_axes=(None, None),
         out_axes=0,
         axis_size=2
     )
@@ -508,7 +508,7 @@ def single_run(config: dict):
         critic_net = TwinCritic(action_dim=action_dim, configs=config)
 
     
-    dummy_step = jnp.array(0, dtype=jnp.int32)
+    dummy_step = 1
     dummy_obs = jnp.zeros((1, *obs_shape))
     critic_variables = critic_net.init(qf_key, dummy_obs, dummy_step, train=True)
     actor_variables = actor_net.init(actor_key, dummy_obs, dummy_step, actor_key2, train=True)
