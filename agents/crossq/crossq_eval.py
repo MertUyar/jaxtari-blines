@@ -16,6 +16,7 @@ def evaluate(
     eval_episodes: int,
     Model: Tuple[nn.Module, nn.Module],
     seed: int = 1,
+    configs: dict = None
 ):
     env: JaxEnvironment | JaxatariWrapper = make_env(env_id)()
     Actor, _ = Model
@@ -40,10 +41,12 @@ def evaluate(
     
     actor = Actor(
         action_dim=action_dim,
+        configs=configs
     )
-    
+
+    dummy_step = jnp.array(0, dtype=jnp.int32)
     dummy_obs = env.observation_space().sample(sample_key).squeeze()[None, ...]
-    actor_params = actor.init(network_key, dummy_obs, init_key)
+    actor_params = actor.init(network_key, dummy_obs, dummy_step, init_key)
 
     with open(model_path, "rb") as f:
         args, actor_params, _, _ = flax.serialization.from_bytes(
@@ -53,7 +56,7 @@ def evaluate(
 
     @jax.jit
     def get_action(actor_params: flax.core.FrozenDict, next_obs: jnp.ndarray, key: jax.random.PRNGKey):
-        _, _, action_probs = actor.apply(actor_params, next_obs, key)
+        _, _, action_probs = actor.apply(actor_params, next_obs, 10000000, key)
 
         actions = jnp.argmax(action_probs, axis=-1)
 
