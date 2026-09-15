@@ -343,7 +343,7 @@ class Pixel_Critic(nn.Module):
     configs: dict
 
     @nn.compact
-    def __call__(self, x, step, train: bool = False):
+    def __call__(self, x, step, train = False):
         x = jnp.transpose(x, (0, 2, 3, 1))
         x = x.astype(jnp.float32) / 255.0
         x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
@@ -404,7 +404,7 @@ class MLP_Critic(nn.Module):
     configs: dict
 
     @nn.compact
-    def __call__(self, x, step, train: bool = False):
+    def __call__(self, x, step, train = False):
         x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
@@ -493,7 +493,7 @@ def single_run(config: dict):
         Pixel_Critic if config.get("PIXEL_BASED", True) else MLP_Critic,
         variable_axes={"params": 0, "batch_stats": 0},
         split_rngs={"params": True},
-        in_axes=(None, None),
+        in_axes=(None, None, None),
         out_axes=0,
         axis_size=2
     )
@@ -510,8 +510,8 @@ def single_run(config: dict):
     
     dummy_step = 1
     dummy_obs = jnp.zeros((1, *obs_shape))
-    critic_variables = critic_net.init(qf_key, dummy_obs, dummy_step, train=True)
-    actor_variables = actor_net.init(actor_key, dummy_obs, dummy_step, actor_key2, train=True)
+    critic_variables = critic_net.init(qf_key, dummy_obs, dummy_step, True)
+    actor_variables = actor_net.init(actor_key, dummy_obs, dummy_step, actor_key2, True)
 
     actor_state = CrossQTrainState.create(
         apply_fn=actor_net.apply,
@@ -566,7 +566,7 @@ def single_run(config: dict):
 
             p_actor = {"params": actor_state.params, "batch_stats": actor_state.batch_stats}
             random_actions = jax.vmap(env.action_space().sample)(action_sample_keys)
-            samples, _, _ = actor_state.apply_fn(p_actor, obs, global_step, actor_sample_key, train=False)
+            samples, _, _ = actor_state.apply_fn(p_actor, obs, global_step, actor_sample_key, False)
 
             actions = jnp.where(global_step < learning_starts, random_actions, samples)
             next_obs, next_env_state, rewards, next_done, info = vmap_step(env_state, actions)
@@ -600,12 +600,12 @@ def single_run(config: dict):
             b_nobs = batch.second.obs
 
             p_actor = {"params": u_actor_state.params, "batch_stats": u_actor_state.batch_stats}
-            _, next_state_log_pi, next_state_action_probs = u_actor_state.apply_fn(p_actor, b_nobs, global_step, sample_key2, train=False)
+            _, next_state_log_pi, next_state_action_probs = u_actor_state.apply_fn(p_actor, b_nobs, global_step, sample_key2, False)
 
 
             def qf_loss_fn(qf_params, qf_state):
                 p = {"params": qf_params, "batch_stats": qf_state.batch_stats}
-                all_q, new_critic_batch_stats = qf_state.apply_fn(p, jnp.concatenate([b_obs, b_nobs]), global_step, train=True, mutable=["batch_stats"]) # (2, 2B, A)
+                all_q, new_critic_batch_stats = qf_state.apply_fn(p, jnp.concatenate([b_obs, b_nobs]), global_step, True, mutable=["batch_stats"]) # (2, 2B, A)
                 qf_preds, next_q_values = jnp.split(all_q, 2, axis=1) # (2, B, A), (2, B, A)
                 min_next_q = jnp.min(next_q_values, axis=0) # (B, A)
                 min_next_q = jnp.sum(next_state_action_probs * (min_next_q - alpha * next_state_log_pi), axis=-1) # (B,)
@@ -622,8 +622,8 @@ def single_run(config: dict):
             def actor_loss_fn(actor_params, actor_state):
                 p_critic = {"params": new_qf_state.params, "batch_stats": new_qf_state.batch_stats}
                 p_actor = {"params": actor_params, "batch_stats": actor_state.batch_stats}
-                new_qf_preds = new_qf_state.apply_fn(p_critic, b_obs, global_step, train=False)
-                (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, global_step, sample_key3, train=True, mutable=["batch_stats"])
+                new_qf_preds = new_qf_state.apply_fn(p_critic, b_obs, global_step, False)
+                (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, global_step, sample_key3, True, mutable=["batch_stats"])
 
                 min_qf_values = jax.lax.stop_gradient(jnp.min(new_qf_preds, axis=0))
                 actor_loss = jnp.sum((action_probs * ((alpha * log_pi) - min_qf_values)), axis=-1).mean()
