@@ -80,6 +80,7 @@ class BatchRenorm(nn.Module):
     axis: int = -1
     momentum: float = 0.99
     epsilon: float = 1e-5
+    epsilon: float = 1e-5
 
     use_scale: bool = True
     use_bias: bool = True
@@ -97,6 +98,7 @@ class BatchRenorm(nn.Module):
 
         # Configuration
         warmup_steps = self.configs.get(
+            "BATCHNORM_WARMUP_STEPS", 100_000
             "BATCHNORM_WARMUP_STEPS", 100_000
         )
 
@@ -153,7 +155,9 @@ class BatchRenorm(nn.Module):
         )
 
         running_std = self.variable(
+        running_std = self.variable(
             "batch_stats",
+            "std",
             "std",
             lambda: jnp.ones(
                 feature_shape,
@@ -175,7 +179,9 @@ class BatchRenorm(nn.Module):
         if self.use_running_average:
             mean = running_mean.value.reshape(broadcast_shape)
             std = running_std.value.reshape(broadcast_shape)
+            std = running_std.value.reshape(broadcast_shape)
 
+            y = (x - mean) / (std + self.epsilon)
             y = (x - mean) / (std + self.epsilon)
 
         # Training
@@ -197,6 +203,7 @@ class BatchRenorm(nn.Module):
             )
 
             old_mean = running_mean.value
+            old_std = running_std.value
             old_std = running_std.value
             # Batch Renormalization correction
             #
@@ -289,6 +296,9 @@ class BatchRenorm(nn.Module):
             running_std.value = (
                 self.momentum * old_std
                 + (1.0 - self.momentum) * batch_std
+            running_std.value = (
+                self.momentum * old_std
+                + (1.0 - self.momentum) * batch_std
             )
 
         # Affine transformation
@@ -325,12 +335,14 @@ class Pixel_Actor_Discrete(nn.Module):
             network=1,
         )(x, step)
         x = nn.relu(x)
+        x = nn.relu(x)
         x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=1,
         )(x, step)
+        x = nn.relu(x)
         x = nn.relu(x)
         x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
@@ -339,6 +351,7 @@ class Pixel_Actor_Discrete(nn.Module):
             network=1,
         )(x, step)
         x = nn.relu(x)
+        x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0)  )(x)
         x = BatchRenorm(use_running_average=not train,
@@ -346,6 +359,7 @@ class Pixel_Actor_Discrete(nn.Module):
             configs=self.configs,
             network=1,
         )(x, step)
+        x = nn.relu(x)
         x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
@@ -373,12 +387,14 @@ class Pixel_Critic(nn.Module):
             network=0,
         )(x, step)
         x = nn.relu(x)
+        x = nn.relu(x)
         x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=0,
         )(x, step)
+        x = nn.relu(x)
         x = nn.relu(x)
         x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
@@ -387,6 +403,7 @@ class Pixel_Critic(nn.Module):
             network=0,
         )(x, step)
         x = nn.relu(x)
+        x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
@@ -394,6 +411,7 @@ class Pixel_Critic(nn.Module):
             configs=self.configs,
             network=0,
         )(x, step)
+        x = nn.relu(x)
         x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         return x
@@ -417,12 +435,14 @@ class MLP_Actor_Discrete(nn.Module):
             network=1,
         )(x, step)
         x = nn.relu(x)
+        x = nn.relu(x)
         x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=1,
         )(x, step)
+        x = nn.relu(x)
         x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
@@ -448,13 +468,16 @@ class MLP_Critic(nn.Module):
             network=0,
         )(x, step)
         x = nn.relu(x)
+        x = nn.relu(x)
         x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+        # x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
         # x = nn.BatchNorm(use_running_average=not train, momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=0,
         )(x, step)
+        x = nn.relu(x)
         x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         return x
@@ -510,6 +533,7 @@ def single_run(config: dict):
 
     num_envs = config["NUM_ENVS"]
     # if -1: we do as many gradient steps as collected samples (stable_baselines3 behavior)
+    gradient_steps = num_envs * config.get("TRAIN_FREQUENCY", 4) if config.get("GRADIENT_STEPS", 1) == -1 else config.get("GRADIENT_STEPS", 1) 
     gradient_steps = num_envs * config.get("TRAIN_FREQUENCY", 4) if config.get("GRADIENT_STEPS", 1) == -1 else config.get("GRADIENT_STEPS", 1) 
 
     @jax.jit
@@ -596,6 +620,8 @@ def single_run(config: dict):
 
 
     def full_CrossQ_step(actor_state, qf_state, log_alpha, a_opt_state, buffer_state, env_state, obs, rng, global_step):
+
+    def full_CrossQ_step(actor_state, qf_state, log_alpha, a_opt_state, buffer_state, env_state, obs, rng, global_step):
         
         def take_action(carry, _):
             actor_state, buffer_state, env_state, obs, global_step, rng = carry
@@ -626,6 +652,7 @@ def single_run(config: dict):
         )
 
         def do_update(update_carry, _):
+            u_actor_state, u_qf_state, log_alpha, a_opt_state, u_key = update_carry
             u_actor_state, u_qf_state, log_alpha, a_opt_state, u_key = update_carry
             u_key, sample_key, sample_key2, sample_key3 = jax.random.split(u_key, 4)
             alpha = jnp.exp(log_alpha) if config.get("AUTOTUNE", True) else config.get("ALPHA", 0.2)
@@ -662,7 +689,20 @@ def single_run(config: dict):
                 p_actor = {"params": actor_params, "batch_stats": actor_state.batch_stats}
                 new_qf_preds = new_qf_state.apply_fn(p_critic, b_obs, global_step, False)
                 (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, global_step, sample_key3, True, mutable=["batch_stats"])
+            def actor_loss_fn(actor_params, actor_state):
+                p_critic = {"params": new_qf_state.params, "batch_stats": new_qf_state.batch_stats}
+                p_actor = {"params": actor_params, "batch_stats": actor_state.batch_stats}
+                new_qf_preds = new_qf_state.apply_fn(p_critic, b_obs, global_step, False)
+                (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, global_step, sample_key3, True, mutable=["batch_stats"])
 
+                min_qf_values = jax.lax.stop_gradient(jnp.min(new_qf_preds, axis=0))
+                actor_loss = jnp.sum((action_probs * ((alpha * log_pi) - min_qf_values)), axis=-1).mean()
+                return actor_loss, (log_pi, action_probs, new_actor_batch_stats)
+            
+            (actor_loss, (log_pi, action_probs, new_actor_batch_stats)), actor_grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(u_actor_state.params, u_actor_state)
+            new_actor_state = u_actor_state.apply_gradients(grads=actor_grads)
+            new_actor_state = new_actor_state.replace(batch_stats=new_actor_batch_stats["batch_stats"])
+        
                 min_qf_values = jax.lax.stop_gradient(jnp.min(new_qf_preds, axis=0))
                 actor_loss = jnp.sum((action_probs * ((alpha * log_pi) - min_qf_values)), axis=-1).mean()
                 return actor_loss, (log_pi, action_probs, new_actor_batch_stats)
@@ -677,7 +717,17 @@ def single_run(config: dict):
                     action_probs_detached = jax.lax.stop_gradient(action_probs)
                     entropy_diff = jax.lax.stop_gradient(log_pi + target_entropy)
                     return jnp.mean(jnp.sum((action_probs_detached * (-jnp.exp(log_alpha) * entropy_diff)), axis=-1))
+            if config.get("AUTOTUNE", True):
+                def alpha_loss_fn(log_alpha):
+                    action_probs_detached = jax.lax.stop_gradient(action_probs)
+                    entropy_diff = jax.lax.stop_gradient(log_pi + target_entropy)
+                    return jnp.mean(jnp.sum((action_probs_detached * (-jnp.exp(log_alpha) * entropy_diff)), axis=-1))
 
+                _, alpha_grad = jax.value_and_grad(alpha_loss_fn)(log_alpha)
+                updates, a_opt_state = a_optimizer.update(alpha_grad, a_opt_state, log_alpha)
+                log_alpha = optax.apply_updates(log_alpha, updates)
+
+            return (new_actor_state, new_qf_state, log_alpha, a_opt_state, u_key), (qf_loss, actor_loss, qf1_pred_a_values, alpha)
                 _, alpha_grad = jax.value_and_grad(alpha_loss_fn)(log_alpha)
                 updates, a_opt_state = a_optimizer.update(alpha_grad, a_opt_state, log_alpha)
                 log_alpha = optax.apply_updates(log_alpha, updates)
@@ -691,12 +741,15 @@ def single_run(config: dict):
             return carry, (qf_l[-1], act_l[-1], qf1_v[-1], a_val[-1].squeeze())
 
         (actor_state, qf_state, log_alpha, a_opt_state, rng), (qf_loss, actor_loss, qf1_val, alpha) = jax.lax.cond(
+        (actor_state, qf_state, log_alpha, a_opt_state, rng), (qf_loss, actor_loss, qf1_val, alpha) = jax.lax.cond(
             replay_buffer.can_sample(buffer_state),
             lambda c: scanned_update(c),
             lambda c: (c, (jnp.array(0.0), jnp.array(0.0), jnp.array(0.0), jnp.array(0.0))),
             (actor_state, qf_state, log_alpha, a_opt_state, rng), 
+            (actor_state, qf_state, log_alpha, a_opt_state, rng), 
         )
 
+        return (actor_state, qf_state, log_alpha, a_opt_state, buffer_state, next_env_state, next_obs, rng, global_step), (infos, qf_loss, actor_loss, qf1_val, alpha)
         return (actor_state, qf_state, log_alpha, a_opt_state, buffer_state, next_env_state, next_obs, rng, global_step), (infos, qf_loss, actor_loss, qf1_val, alpha)
 
     def save_and_eval(step_count):
@@ -760,6 +813,7 @@ def single_run(config: dict):
     print(f"[crossq] start compile...")
     start_compile = time.perf_counter()
     global_step = jnp.array(0, dtype=jnp.int32)
+    crossq_carry = (actor_state, qf_state, log_alpha, a_opt_state, buffer_state, _state, _obs, key, global_step)
     crossq_carry = (actor_state, qf_state, log_alpha, a_opt_state, buffer_state, _state, _obs, key, global_step)
 
     @jax.jit
