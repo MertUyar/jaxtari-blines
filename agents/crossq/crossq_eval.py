@@ -50,7 +50,7 @@ def evaluate(
 
     with open(model_path, "rb") as f:
         args, actor_params, _, _ = flax.serialization.from_bytes(
-            (None, actor_params, None, None), 
+            (None, actor_params, None), 
             f.read()
         )
 
