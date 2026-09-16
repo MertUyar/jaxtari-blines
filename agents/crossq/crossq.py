@@ -74,6 +74,7 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
 
 class BatchRenorm(nn.Module):
     configs: dict
+    network: int # 0 for critic network, 1 for actor network
 
     use_running_average: bool = False
     axis: int = -1
@@ -119,7 +120,10 @@ class BatchRenorm(nn.Module):
         )
 
         # calculating amount of gradient steps
-        step = (global_steps - self.configs.get("LEARNING_STARTS", 20000)) // ((self.configs.get("NUM_ENVS", 1) * self.configs.get("TRAIN_FREQUENCY", 4)) // self.configs.get("GRADIENT_STEPS", 1))
+        if self.network == 1:
+            step = (global_steps - self.configs.get("LEARNING_STARTS", 20000)) // ((self.configs.get("NUM_ENVS", 1) * self.configs.get("TRAIN_FREQUENCY", 4) * self.configs.get("POLICY_DELAY", 3)) // self.configs.get("GRADIENT_STEPS", 1))
+        else:
+            step = (global_steps - self.configs.get("LEARNING_STARTS", 20000)) // ((self.configs.get("NUM_ENVS", 1) * self.configs.get("TRAIN_FREQUENCY", 4)) // self.configs.get("GRADIENT_STEPS", 1))
 
         # Feature shape
         feature_shape = (x.shape[axis],)
@@ -333,24 +337,28 @@ class Pixel_Actor_Discrete(nn.Module):
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=1,
         )(x, step)
         x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=1,
         )(x, step)
         x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=1,
         )(x, step)
         x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=1,
         )(x, step)
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0)  )(x)
@@ -358,6 +366,7 @@ class Pixel_Actor_Discrete(nn.Module):
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=1,
         )(x, step)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
@@ -376,24 +385,28 @@ class Pixel_Critic(nn.Module):
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=0,
         )(x, step)
         x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=0,
         )(x, step)
         x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=0,
         )(x, step)
         x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=0,
         )(x, step)
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
@@ -401,6 +414,7 @@ class Pixel_Critic(nn.Module):
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=0,
         )(x, step)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         return x
@@ -415,18 +429,21 @@ class MLP_Actor_Discrete(nn.Module):
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=1,
         )(x, step)
         x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=1,
         )(x, step)
         x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=1,
         )(x, step)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
@@ -443,18 +460,21 @@ class MLP_Critic(nn.Module):
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=0,
         )(x, step)
         x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=0,
         )(x, step)
         x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
+            network=0,
         )(x, step)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         return x
