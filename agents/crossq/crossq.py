@@ -74,7 +74,9 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
 
 class BatchRenorm(nn.Module):
     configs: dict
-    network: int # 0 for critic, 1 for actor
+    # 0 for critic, 1 for actor. Informational only: the caller passes the
+    # matching gradient-update counter as `step` (see do_update).
+    network: int
 
     use_running_average: bool = False
     axis: int = -1
@@ -94,7 +96,11 @@ class BatchRenorm(nn.Module):
     param_dtype: object = jnp.float32
 
     @nn.compact
-    def __call__(self, x, global_steps):
+    def __call__(self, x, step):
+        # `step` = number of gradient updates this network has already received
+        # (critic: n_updates, actor: n_updates // POLICY_DELAY), like the `steps`
+        # counter of the reference implementation. It only drives the r_max/d_max
+        # relaxation in training mode and is ignored with use_running_average.
         x = jnp.asarray(x)
         # Statistics are accumulated in at least float32 (observations may be
         # float16, e.g. after NormalizeObservationWrapper).
@@ -104,11 +110,11 @@ class BatchRenorm(nn.Module):
 
         # Configuration
         warmup_steps = self.configs.get(
-            "BRN_WARMUP_STEPS", 100000
+            "BRN_WARMUP_STEPS", 100_000
         )
 
         relaxation_steps = self.configs.get(
-            "BRN_RELAXATION_STEPS", 100000
+            "BRN_RELAXATION_STEPS", 100_000
         )
 
         final_rmax = self.configs.get(
@@ -118,12 +124,6 @@ class BatchRenorm(nn.Module):
         final_dmax = self.configs.get(
             "BRN_DMAX", 5.0
         )
-
-        # calculating amount of gradient steps
-        if self.network == 1:
-            step = (global_steps - self.configs.get("LEARNING_STARTS", 20000)) // ((self.configs.get("NUM_ENVS", 1) * self.configs.get("TRAIN_FREQUENCY", 4) * self.configs.get("POLICY_DELAY", 1)) // self.configs.get("GRADIENT_STEPS", 1))
-        else:
-            step = (global_steps - self.configs.get("LEARNING_STARTS", 20000)) // ((self.configs.get("NUM_ENVS", 1) * self.configs.get("TRAIN_FREQUENCY", 4)) // self.configs.get("GRADIENT_STEPS", 1))
 
         # Feature shape
         feature_shape = (x.shape[axis],)
@@ -332,6 +332,8 @@ class Pixel_Actor_Discrete(nn.Module):
     def __call__(self, x, step, key, train=False):
         x = jnp.transpose(x, (0, 2, 3, 1))
         x = x.astype(jnp.float32) / 255.0
+        # Reference CrossQ topology: BatchRenorm on the input, then
+        # Dense/Conv -> activation -> BatchRenorm for every hidden layer.
         x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
@@ -498,7 +500,7 @@ def single_run(config: dict):
 
     num_envs = config["NUM_ENVS"]
     # if -1: we do as many gradient steps as collected samples (stable_baselines3 behavior)
-    gradient_steps = config.get("GRADIENT_STEPS", 1) 
+    gradient_steps = num_envs * config.get("TRAIN_FREQUENCY", 4) if config.get("GRADIENT_STEPS", 1) == -1 else config.get("GRADIENT_STEPS", 1)
 
     @jax.jit
     def vmap_reset(rng):
@@ -514,6 +516,13 @@ def single_run(config: dict):
     gamma = config.get("GAMMA", 0.99)
     batch_size = config.get("BATCH_SIZE", 64)
     learning_starts = config.get("LEARNING_STARTS", 20000)
+
+    # Target network, same semantics and defaults as sac.py: with TAU=1.0 the
+    # target critic is a hard copy refreshed every TARGET_UPDATE_FREQUENCY env
+    # steps. USE_TARGET_NETWORK=False gives back the original target-free CrossQ.
+    use_target_network = config.get("USE_TARGET_NETWORK", True)
+    tau = config.get("TAU", 1.0)
+    steps_per_update = config.get("TRAIN_FREQUENCY", 4) * config.get("NUM_ENVS", 1)
 
     TwinCritic = nn.vmap(
         Pixel_Critic if config.get("PIXEL_BASED", True) else MLP_Critic,
@@ -552,6 +561,11 @@ def single_run(config: dict):
         batch_stats=critic_variables["batch_stats"],
         tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4, b1=0.5),
     )
+
+    # Target critic = frozen copy of params AND batch_stats, evaluated in eval
+    # mode (its own running statistics). Kept outside qf_state so the saved
+    # checkpoint format, and therefore crossq_eval, stays unchanged.
+    qf_target = {"params": critic_variables["params"], "batch_stats": critic_variables["batch_stats"]}
 
     replay_buffer = fbx.make_prioritised_flat_buffer(
         max_length=config.get("BUFFER_SIZE", int(1e6)),
@@ -594,7 +608,7 @@ def single_run(config: dict):
     policy_delay = max(int(config.get("POLICY_DELAY", 1)), 1)
 
 
-    def full_CrossQ_step(actor_state, qf_state, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, env_state, obs, rng, global_step):
+    def full_CrossQ_step(actor_state, qf_state, qf_target, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, env_state, obs, rng, global_step):
         
         def take_action(carry, _):
             actor_state, buffer_state, env_state, obs, global_step, rng = carry
@@ -639,11 +653,18 @@ def single_run(config: dict):
             p_actor = {"params": u_actor_state.params, "batch_stats": u_actor_state.batch_stats}
             _, next_state_log_pi, next_state_action_probs = u_actor_state.apply_fn(p_actor, b_nobs, global_step, sample_key2, False)
 
+            if use_target_network:
+                # Bootstrap from the target critic in eval mode (no gradient, stats not updated).
+                next_q_target = u_qf_state.apply_fn(qf_target, b_nobs, n_updates, False) # (2, B, A)
 
             def qf_loss_fn(qf_params, qf_state):
                 p = {"params": qf_params, "batch_stats": qf_state.batch_stats}
-                all_q, new_critic_batch_stats = qf_state.apply_fn(p, jnp.concatenate([b_obs, b_nobs]), global_step, True, mutable=["batch_stats"]) # (2, 2B, A)
+                all_q, new_critic_batch_stats = qf_state.apply_fn(p, jnp.concatenate([b_obs, b_nobs]), n_updates, True, mutable=["batch_stats"]) # (2, 2B, A)
                 qf_preds, next_q_values = jnp.split(all_q, 2, axis=1) # (2, B, A), (2, B, A)
+                if use_target_network:
+                    # b_nobs still enters the joint batch statistics as in CrossQ,
+                    # only the bootstrap values come from the target critic.
+                    next_q_values = next_q_target
                 min_next_q = jnp.min(next_q_values, axis=0) # (B, A)
                 min_next_q = jnp.sum(next_state_action_probs * (min_next_q - alpha * next_state_log_pi), axis=-1) # (B,)
                 min_next_q = jax.lax.stop_gradient(b_rew.flatten() + (1.0 - b_don.flatten()) * gamma * min_next_q) # (B,)
@@ -663,7 +684,8 @@ def single_run(config: dict):
                     p_critic = {"params": new_qf_state.params, "batch_stats": new_qf_state.batch_stats}
                     p_actor = {"params": actor_params, "batch_stats": actor_state.batch_stats}
                     new_qf_preds = new_qf_state.apply_fn(p_critic, b_obs, global_step, False)
-                    (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, global_step, sample_key3, True, mutable=["batch_stats"])
+                    # n_updates // policy_delay = number of actor updates done so far
+                    (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, n_updates // policy_delay, sample_key3, True, mutable=["batch_stats"])
 
                     min_qf_values = jax.lax.stop_gradient(jnp.min(new_qf_preds, axis=0))
                     actor_loss = jnp.sum((action_probs * ((alpha * log_pi) - min_qf_values)), axis=-1).mean()
@@ -713,7 +735,26 @@ def single_run(config: dict):
             (actor_state, qf_state, log_alpha, a_opt_state, n_updates, last_actor_loss, rng), 
         )
 
-        return (actor_state, qf_state, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, next_env_state, next_obs, rng, global_step), (infos, qf_loss, actor_loss, qf1_val, alpha)
+        if use_target_network:
+            def update_target_network(c_qf_target):
+                return {
+                    "params": optax.incremental_update(qf_state.params, c_qf_target["params"], tau),
+                    "batch_stats": optax.incremental_update(qf_state.batch_stats, c_qf_target["batch_stats"], tau),
+                }
+
+            update_target_flag = jnp.logical_and(
+                replay_buffer.can_sample(buffer_state),
+                (global_step % config.get("TARGET_UPDATE_FREQUENCY", 8000)) < steps_per_update
+            )
+
+            qf_target = jax.lax.cond(
+                update_target_flag,
+                update_target_network,
+                lambda c: c,
+                qf_target
+            )
+
+        return (actor_state, qf_state, qf_target, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, next_env_state, next_obs, rng, global_step), (infos, qf_loss, actor_loss, qf1_val, alpha)
 
     def save_and_eval(step_count):
         if config.get("SAVE_PATH", "./models") is not None:
@@ -778,7 +819,7 @@ def single_run(config: dict):
     global_step = jnp.array(0, dtype=jnp.int32)
     n_updates = jnp.array(0, dtype=jnp.int32)
     last_actor_loss = jnp.array(0.0)
-    crossq_carry = (actor_state, qf_state, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, _state, _obs, key, global_step)
+    crossq_carry = (actor_state, qf_state, qf_target, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, _state, _obs, key, global_step)
 
     @jax.jit
     def scanned_steps(carry):
