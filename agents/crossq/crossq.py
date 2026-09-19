@@ -712,7 +712,7 @@ def single_run(config: dict):
                     p_critic = {"params": new_qf_state.params, "batch_stats": new_qf_state.batch_stats}
                     p_actor = {"params": actor_params, "batch_stats": actor_state.batch_stats}
                     new_qf_preds = new_qf_state.apply_fn(p_critic, b_obs, global_step, False)
-                    # n_updates // policy_delay = number of actor updates done so far
+                    
                     (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, n_updates // policy_delay, sample_key3, True, mutable=["batch_stats"])
 
                     min_qf_values = jax.lax.stop_gradient(jnp.min(new_qf_preds, axis=0))
