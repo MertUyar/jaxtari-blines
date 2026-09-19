@@ -332,8 +332,6 @@ class Pixel_Actor_Discrete(nn.Module):
     def __call__(self, x, step, key, train=False):
         x = jnp.transpose(x, (0, 2, 3, 1))
         x = x.astype(jnp.float32) / 255.0
-        # Reference CrossQ topology: BatchRenorm on the input, then
-        # Dense/Conv -> activation -> BatchRenorm for every hidden layer.
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
