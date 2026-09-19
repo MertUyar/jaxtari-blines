@@ -332,12 +332,25 @@ class Pixel_Actor_Discrete(nn.Module):
     def __call__(self, x, step, key, train=False):
         x = jnp.transpose(x, (0, 2, 3, 1))
         x = x.astype(jnp.float32) / 255.0
-        # Reference CrossQ topology: BatchRenorm on the input, then
-        # Dense/Conv -> activation -> BatchRenorm for every hidden layer.
+        x = BatchRenorm(use_running_average=not train,
+            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+            configs=self.configs,
+            network=1,
+        )(x, step)
         x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
+        x = BatchRenorm(use_running_average=not train,
+            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+            configs=self.configs,
+            network=1,
+        )(x, step)
         x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
+        x = BatchRenorm(use_running_average=not train,
+            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+            configs=self.configs,
+            network=1,
+        )(x, step)
         x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
@@ -367,10 +380,25 @@ class Pixel_Critic(nn.Module):
     def __call__(self, x, step, train = False):
         x = jnp.transpose(x, (0, 2, 3, 1))
         x = x.astype(jnp.float32) / 255.0
+        x = BatchRenorm(use_running_average=not train,
+            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+            configs=self.configs,
+            network=1,
+        )(x, step)
         x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
+        x = BatchRenorm(use_running_average=not train,
+            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+            configs=self.configs,
+            network=1,
+        )(x, step)
         x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
+        x = BatchRenorm(use_running_average=not train,
+            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+            configs=self.configs,
+            network=1,
+        )(x, step)
         x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
