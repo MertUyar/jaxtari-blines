@@ -49,7 +49,7 @@ def evaluate(
     actor_params = actor.init(network_key, dummy_obs, dummy_step, init_key)
 
     with open(model_path, "rb") as f:
-        args, actor_params, _, _ = flax.serialization.from_bytes(
+        args, actor_params, _ = flax.serialization.from_bytes(
             (None, actor_params, None), 
             f.read()
         )
