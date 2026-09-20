@@ -561,7 +561,7 @@ def single_run(config: dict):
         axis_size=2
     )
 
-    key, actor_key, actor_key2, qf_key = jax.random.split(key, 4)
+    key, carry_key, actor_key, actor_key2, qf_key = jax.random.split(key, 5)
     
     if config.get("PIXEL_BASED", True):
         actor_net = Pixel_Actor_Discrete(action_dim=action_dim, configs=config)
@@ -847,7 +847,7 @@ def single_run(config: dict):
     global_step = jnp.array(0, dtype=jnp.int32)
     n_updates = jnp.array(0, dtype=jnp.int32)
     last_actor_loss = jnp.array(0.0)
-    crossq_carry = (actor_state, qf_state, qf_target, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, _state, _obs, key, global_step)
+    crossq_carry = (actor_state, qf_state, qf_target, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, _state, _obs, carry_key, global_step)
 
     @jax.jit
     def scanned_steps(carry):

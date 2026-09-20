@@ -215,7 +215,7 @@ def single_run(config: dict):
     steps_per_update = config.get("TRAIN_FREQUENCY", 4) * config.get("NUM_ENVS", 1)
 
 
-    key, actor_key, actor_key2, qf1_key, qf2_key = jax.random.split(key, 5)
+    key, carry_key, actor_key, actor_key2, qf1_key, qf2_key = jax.random.split(key, 6)
     
     if config.get("PIXEL_BASED", True):
         actor_net = Pixel_Actor_Discrete(action_dim=action_dim)
@@ -461,7 +461,7 @@ def single_run(config: dict):
     print(f"[sac] start compile...")
     start_compile = time.perf_counter()
     global_step = jnp.array(0, dtype=jnp.int32)
-    sac_carry = (actor_state, qf1_state, qf2_state, log_alpha, a_opt_state, buffer_state, _state, _obs, key, global_step)
+    sac_carry = (actor_state, qf1_state, qf2_state, log_alpha, a_opt_state, buffer_state, _state, _obs, carry_key, global_step)
 
     @jax.jit
     def scanned_steps(carry):
