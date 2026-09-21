@@ -424,25 +424,10 @@ class MLP_Actor_Discrete(nn.Module):
 
     @nn.compact
     def __call__(self, x, step, key, train=False):
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
         x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
         x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
         action_probs = jax.nn.softmax(x, axis=-1)
@@ -460,14 +445,14 @@ class MLP_Critic(nn.Module):
             configs=self.configs,
             network=0,
         )(x, step)
-        x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+        x = nn.Dense(1024, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=0,
         )(x, step)
-        x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+        x = nn.Dense(1024, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
@@ -578,8 +563,8 @@ def single_run(config: dict):
 
     actor_state = CrossQTrainState.create(
         apply_fn=actor_net.apply,
-        params=actor_variables["params"],
-        batch_stats=actor_variables["batch_stats"],
+        params=actor_variables,
+        batch_stats=actor_variables,
         tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4, b1=0.5),
     )
 
@@ -643,9 +628,8 @@ def single_run(config: dict):
             rng, action_rng, actor_sample_key = jax.random.split(rng, 3)
             action_sample_keys = jax.random.split(action_rng, num_envs)
 
-            p_actor = {"params": actor_state.params, "batch_stats": actor_state.batch_stats}
             random_actions = jax.vmap(env.action_space().sample)(action_sample_keys)
-            samples, _, _ = actor_state.apply_fn(p_actor, obs, global_step, actor_sample_key, False)
+            samples, _, _ = actor_state.apply_fn(actor_state.params, obs, global_step, actor_sample_key, False)
 
             actions = jnp.where(global_step < learning_starts, random_actions, samples)
             next_obs, next_env_state, rewards, next_done, info = vmap_step(env_state, actions)
@@ -678,8 +662,7 @@ def single_run(config: dict):
             b_don = batch.first.done
             b_nobs = batch.second.obs
 
-            p_actor = {"params": u_actor_state.params, "batch_stats": u_actor_state.batch_stats}
-            _, next_state_log_pi, next_state_action_probs = u_actor_state.apply_fn(p_actor, b_nobs, global_step, sample_key2, False)
+            _, next_state_log_pi, next_state_action_probs = u_actor_state.apply_fn(u_actor_state.params, b_nobs, global_step, sample_key2, False)
 
             if use_target_network:
                 # Bootstrap from the target critic in eval mode (no gradient, stats not updated).
@@ -710,10 +693,10 @@ def single_run(config: dict):
 
                 def actor_loss_fn(actor_params, actor_state):
                     p_critic = {"params": new_qf_state.params, "batch_stats": new_qf_state.batch_stats}
-                    p_actor = {"params": actor_params, "batch_stats": actor_state.batch_stats}
+                    
                     new_qf_preds = new_qf_state.apply_fn(p_critic, b_obs, global_step, False)
                     
-                    (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, n_updates // policy_delay, sample_key3, True, mutable=["batch_stats"])
+                    (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(actor_state.params, b_obs, n_updates // policy_delay, sample_key3, True, mutable=["batch_stats"])
 
                     min_qf_values = jax.lax.stop_gradient(jnp.min(new_qf_preds, axis=0))
                     actor_loss = jnp.sum((action_probs * ((alpha * log_pi) - min_qf_values)), axis=-1).mean()
@@ -721,7 +704,7 @@ def single_run(config: dict):
 
                 (actor_loss, (log_pi, action_probs, new_actor_batch_stats)), actor_grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(d_actor_state.params, d_actor_state)
                 new_actor_state = d_actor_state.apply_gradients(grads=actor_grads)
-                new_actor_state = new_actor_state.replace(batch_stats=new_actor_batch_stats["batch_stats"])
+
 
                 if config.get("AUTOTUNE", True):
                     def alpha_loss_fn(a_log_alpha):
