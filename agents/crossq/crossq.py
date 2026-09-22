@@ -428,25 +428,20 @@ class MLP_Actor_Discrete(nn.Module):
 
     @nn.compact
     def __call__(self, x, step, key, train=False):
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
         x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=1,
         )(x, step)
+        x = nn.relu(x)
         x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=1,
         )(x, step)
+        x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
         action_probs = jax.nn.softmax(x, axis=-1)
@@ -459,25 +454,20 @@ class MLP_Critic(nn.Module):
 
     @nn.compact
     def __call__(self, x, step, train = False):
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=0,
-        )(x, step)
         x = nn.Dense(1024, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=0,
         )(x, step)
+        x = nn.relu(x)
         x = nn.Dense(1024, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=0,
         )(x, step)
+        x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         return x
 
