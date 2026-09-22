@@ -339,11 +339,6 @@ class Pixel_Actor_Discrete(nn.Module):
         x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
         x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0)  )(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
@@ -379,11 +374,6 @@ class Pixel_Critic(nn.Module):
         x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=0,
-        )(x, step)
         x = nn.Dense(1024, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         x = BatchRenorm(use_running_average=not train,
