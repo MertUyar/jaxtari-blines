@@ -23,7 +23,7 @@ def evaluate(
     key = jax.random.PRNGKey(seed)
 
     action_dim = env.action_space().n
-    
+
 
     @jax.jit
     def wrapped_reset(key):
@@ -38,7 +38,7 @@ def evaluate(
 
     key, reset_key, sample_key, network_key, init_key, step_fn_key = jax.random.split(key, 6)
     next_obs, handle = wrapped_reset(reset_key)
-    
+
     actor = Actor(
         action_dim=action_dim,
         configs=configs
@@ -50,7 +50,7 @@ def evaluate(
 
     with open(model_path, "rb") as f:
         args, actor_params, _ = flax.serialization.from_bytes(
-            (None, actor_params, None), 
+            (None, actor_params, None),
             f.read()
         )
 
@@ -67,9 +67,9 @@ def evaluate(
         key, act_key = jax.random.split(key)
         actions = get_action(actor_params, next_obs, act_key)
         next_obs, env_state, reward, done, info = jax.vmap(wrapped_step)(env_state, actions)
-        
+
         first_states = jax.tree.map(lambda x: x[0], env_state)
-        
+
         return (next_obs, env_state, key), (first_states, done, reward, actions)
 
     reset_keys = jax.random.split(key, eval_episodes)
@@ -101,16 +101,16 @@ def evaluate(
     dones = jnp.concatenate(all_dones, axis=0)
     rewards = jnp.concatenate(all_rewards, axis=0)
 
-    first_done = jnp.argmax(dones, axis=0) 
+    first_done = jnp.argmax(dones, axis=0)
     has_finished = jax.lax.cummax(dones.astype(jnp.int32), axis=0)
-    
+
     mask_after_first_done = jnp.pad(has_finished[:-1, :], ((1, 0), (0, 0)), constant_values=0)
     masked_rewards = rewards * (1 - mask_after_first_done)
-    episodic_returns = jnp.sum(masked_rewards, axis=0) 
+    episodic_returns = jnp.sum(masked_rewards, axis=0)
     print(f"Evaluated {eval_episodes} episodes, mean return: {episodic_returns.mean():.2f}, std return: {episodic_returns.std():.2f}")
 
     env_states_until_done = jax.tree.map(
-        lambda x: x[:first_done[0] + 1], 
+        lambda x: x[:first_done[0] + 1],
         first_states_history.atari_state.atari_state.env_state
     )
 

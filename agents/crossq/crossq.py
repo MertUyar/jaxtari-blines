@@ -74,17 +74,11 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
 
 class BatchRenorm(nn.Module):
     configs: dict
-    # 0 for critic, 1 for actor. Informational only: the caller passes the
-    # matching gradient-update counter as `step` (see do_update).
     network: int
 
     use_running_average: bool = False
     axis: int = -1
     momentum: float = 0.99
-    # NOTE: epsilon is added to the *variance*, matching the reference CrossQ
-    # implementation (sbx / adityab-CrossQ), which uses 1e-3. This floors the
-    # effective standard deviation at ~0.032 and prevents the huge activations
-    # that a near-zero feature variance would otherwise produce.
     epsilon: float = 1e-3
 
     use_scale: bool = True
@@ -97,18 +91,11 @@ class BatchRenorm(nn.Module):
 
     @nn.compact
     def __call__(self, x, step):
-        # `step` = number of gradient updates this network has already received
-        # (critic: n_updates, actor: n_updates // POLICY_DELAY), like the `steps`
-        # counter of the reference implementation. It only drives the r_max/d_max
-        # relaxation in training mode and is ignored with use_running_average.
         x = jnp.asarray(x)
-        # Statistics are accumulated in at least float32 (observations may be
-        # float16, e.g. after NormalizeObservationWrapper).
         x = x.astype(jnp.promote_types(x.dtype, jnp.float32))
 
         axis = self.axis if self.axis >= 0 else x.ndim + self.axis
 
-        # Configuration
         warmup_steps = self.configs.get(
             "BRN_WARMUP_STEPS", 100_000
         )
@@ -125,7 +112,6 @@ class BatchRenorm(nn.Module):
             "BRN_DMAX", 5.0
         )
 
-        # Feature shape
         feature_shape = (x.shape[axis],)
 
         # Parameters
@@ -149,7 +135,6 @@ class BatchRenorm(nn.Module):
         else:
             bias = None
 
-        # Running statistics
         running_mean = self.variable(
             "batch_stats",
             "mean",
@@ -168,7 +153,6 @@ class BatchRenorm(nn.Module):
             ),
         )
 
-        # Axes over which batch statistics are computed.
         reduce_axes = tuple(
             i for i in range(x.ndim)
             if i != axis
@@ -205,47 +189,16 @@ class BatchRenorm(nn.Module):
 
             old_mean = running_mean.value
             old_var = running_var.value
-
-            # Running standard deviation, floored through the same epsilon that
-            # is used at inference time. The reference implementation uses
-            # sqrt(running_var + eps) here; using the raw running std (no floor)
-            # lets r/d blow up whenever a feature variance collapses.
             old_std = jnp.sqrt(
                 old_var + self.epsilon
             )
-
-            # Batch Renormalization correction
-            #
-            # r = sigma_B / sigma
-            # d = (mu_B - mu) / sigma
             r_raw = batch_std / old_std
             d_raw = (batch_mean - old_mean) / old_std
-
-            # Relaxation schedule
-            #
-            # Before warmup:
-            #   rmax = 1
-            #   dmax = 0
-            #
-            # After warmup:
-            #   gradually increase:
-            #       rmax: 1 -> final_rmax
-            #       dmax: 0 -> final_dmax
-            #
-            # After relaxation:
-            #   rmax = final_rmax
-            #   dmax = final_dmax
-
-            # Number of steps elapsed after warmup.
             relaxation_progress = jnp.clip(
                 (step - warmup_steps) / relaxation_steps,
                 0.0,
                 1.0,
             )
-
-            # During warmup this is exactly:
-            #   rmax = 1
-            #   dmax = 0
             relaxed_rmax = (
                 1.0
                 + relaxation_progress * (final_rmax - 1.0)
@@ -267,13 +220,8 @@ class BatchRenorm(nn.Module):
                 -relaxed_dmax,
                 relaxed_dmax,
             )
-
-            # CrossQ/BatchRenorm convention:
-            # do not backpropagate through r and d.
             r = jax.lax.stop_gradient(r)
             d = jax.lax.stop_gradient(d)
-
-            # Batch Renorm normalization
             batch_mean_b = batch_mean.reshape(
                 broadcast_shape
             )
@@ -295,13 +243,6 @@ class BatchRenorm(nn.Module):
             ) * r_b + d_b
 
             y = x_hat
-
-            # Update running statistics
-            #
-            # The variance (not the standard deviation) is tracked, matching the
-            # reference implementation. Tracking an EMA of the std would give a
-            # systematically too small scale estimate (Jensen), i.e. inference
-            # time over-amplification.
             running_mean.value = (
                 self.momentum * old_mean
                 + (1.0 - self.momentum) * batch_mean
@@ -311,8 +252,6 @@ class BatchRenorm(nn.Module):
                 self.momentum * old_var
                 + (1.0 - self.momentum) * batch_var
             )
-
-        # Affine transformation
         if scale is not None:
             y = y * scale.reshape(broadcast_shape)
 
@@ -323,7 +262,7 @@ class BatchRenorm(nn.Module):
             y = y.astype(self.dtype)
 
         return y
-    
+
 class Pixel_Actor_Discrete(nn.Module):
     action_dim: int
     configs: dict
@@ -372,7 +311,7 @@ class Pixel_Actor_Discrete(nn.Module):
         sample = jax.random.categorical(key, x)
         action_probs = jax.nn.softmax(x, axis=-1)
         log_probs = nn.log_softmax(x, axis=-1)
-        return sample, log_probs, action_probs 
+        return sample, log_probs, action_probs
 
 class Pixel_Critic(nn.Module):
     action_dim: int
@@ -486,7 +425,7 @@ def single_run(config: dict):
     config = {k.upper(): v for k, v in config.items() if k != "alg"}
 
     if config.get("PIXEL_BASED", True) and config.get("NUM_ENVS", 1) > 16:
-        print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.") 
+        print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.")
 
     run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel'}_{config['SEED']}"
 
@@ -514,7 +453,7 @@ def single_run(config: dict):
     )()
 
     action_dim = env.action_space().n
-    
+
 
     obs_shape = env.observation_space().shape
     if config.get("PIXEL_BASED", True):
@@ -538,10 +477,6 @@ def single_run(config: dict):
     gamma = config.get("GAMMA", 0.99)
     batch_size = config.get("BATCH_SIZE", 64)
     learning_starts = config.get("LEARNING_STARTS", 20000)
-
-    # Target network, same semantics and defaults as sac.py: with TAU=1.0 the
-    # target critic is a hard copy refreshed every TARGET_UPDATE_FREQUENCY env
-    # steps. USE_TARGET_NETWORK=False gives back the original target-free CrossQ.
     use_target_network = config.get("USE_TARGET_NETWORK", True)
     tau = config.get("TAU", 1.0)
     steps_per_update = config.get("TRAIN_FREQUENCY", 4) * config.get("NUM_ENVS", 1)
@@ -556,7 +491,7 @@ def single_run(config: dict):
     )
 
     key, carry_key, actor_key, actor_key2, qf_key = jax.random.split(key, 5)
-    
+
     if config.get("PIXEL_BASED", True):
         actor_net = Pixel_Actor_Discrete(action_dim=action_dim, configs=config)
         critic_net = TwinCritic(action_dim=action_dim, configs=config)
@@ -564,7 +499,7 @@ def single_run(config: dict):
         actor_net = MLP_Actor_Discrete(action_dim=action_dim, configs=config)
         critic_net = TwinCritic(action_dim=action_dim, configs=config)
 
-    
+
     dummy_step = 1
     dummy_obs = jnp.zeros((1, *obs_shape))
     critic_variables = critic_net.init(qf_key, dummy_obs, dummy_step, True)
@@ -583,10 +518,6 @@ def single_run(config: dict):
         batch_stats=critic_variables["batch_stats"],
         tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4, b1=0.5),
     )
-
-    # Target critic = frozen copy of params AND batch_stats, evaluated in eval
-    # mode (its own running statistics). Kept outside qf_state so the saved
-    # checkpoint format, and therefore crossq_eval, stays unchanged.
     qf_target = {"params": critic_variables["params"], "batch_stats": critic_variables["batch_stats"]}
 
     replay_buffer = fbx.make_prioritised_flat_buffer(
@@ -604,7 +535,7 @@ def single_run(config: dict):
     )
     _obs, _state = vmap_reset(jax.random.split(key, num_envs))
     _obs, _state, _reward, _done, _info = vmap_step(_state, jnp.zeros((num_envs,), dtype=jnp.int32))
-    
+
     _dummy_step = TimeStep(
         obs=_obs[0],
         action=jnp.zeros((), dtype=jnp.int32),
@@ -618,20 +549,14 @@ def single_run(config: dict):
     a_opt_state = a_optimizer.init(log_alpha)
     target_entropy = -config.get("TARGET_ENTROPY_SCALE", 0.89) * jnp.log(1 / action_dim)
 
-    # Adam normalises the gradient magnitude, so log_alpha drifts by ~LEARNING_RATE
-    # per update as long as (entropy - target_entropy) keeps its sign. Without a
-    # target network to damp the bootstrapped target, an unbounded alpha turns that
-    # slow drift into a divergence. Clamp alpha to a sane range.
     log_alpha_min = jnp.log(jnp.asarray(config.get("ALPHA_MIN", 1e-4), dtype=log_alpha.dtype))
     log_alpha_max = jnp.log(jnp.asarray(config.get("ALPHA_MAX", 1.0), dtype=log_alpha.dtype))
 
-    # CrossQ updates the actor (and the temperature) only every POLICY_DELAY
-    # critic updates; the reference implementation uses 3.
     policy_delay = max(int(config.get("POLICY_DELAY", 1)), 1)
 
 
     def full_CrossQ_step(actor_state, qf_state, qf_target, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, env_state, obs, rng, global_step):
-        
+
         def take_action(carry, _):
             actor_state, buffer_state, env_state, obs, global_step, rng = carry
             rng, action_rng, actor_sample_key = jax.random.split(rng, 3)
@@ -655,7 +580,7 @@ def single_run(config: dict):
 
         (actor_state, buffer_state, next_env_state, next_obs, global_step, rng), infos = jax.lax.scan(
             take_action,
-            (actor_state, buffer_state, env_state, obs, global_step, rng), 
+            (actor_state, buffer_state, env_state, obs, global_step, rng),
             None,
             length=config.get("TRAIN_FREQUENCY", 4),
         )
@@ -684,8 +609,6 @@ def single_run(config: dict):
                 all_q, new_critic_batch_stats = qf_state.apply_fn(p, jnp.concatenate([b_obs, b_nobs]), n_updates, True, mutable=["batch_stats"]) # (2, 2B, A)
                 qf_preds, next_q_values = jnp.split(all_q, 2, axis=1) # (2, B, A), (2, B, A)
                 if use_target_network:
-                    # b_nobs still enters the joint batch statistics as in CrossQ,
-                    # only the bootstrap values come from the target critic.
                     next_q_values = next_q_target
                 min_next_q = jnp.min(next_q_values, axis=0) # (B, A)
                 min_next_q = jnp.sum(next_state_action_probs * (min_next_q - alpha * next_state_log_pi), axis=-1) # (B,)
@@ -706,7 +629,7 @@ def single_run(config: dict):
                     p_critic = {"params": new_qf_state.params, "batch_stats": new_qf_state.batch_stats}
                     p_actor = {"params": actor_params, "batch_stats": actor_state.batch_stats}
                     new_qf_preds = new_qf_state.apply_fn(p_critic, b_obs, global_step, False)
-                    
+
                     (_, log_pi, action_probs), new_actor_batch_stats = actor_state.apply_fn(p_actor, b_obs, n_updates // policy_delay, sample_key3, True, mutable=["batch_stats"])
 
                     min_qf_values = jax.lax.stop_gradient(jnp.min(new_qf_preds, axis=0))
@@ -731,8 +654,6 @@ def single_run(config: dict):
                 return (new_actor_state, d_log_alpha, d_a_opt_state), actor_loss
 
             def skip_actor_and_alpha(delayed_carry):
-                # Keep the last computed actor loss so the logged metric stays
-                # meaningful on delayed steps.
                 return delayed_carry, last_actor_loss
 
             (new_actor_state, log_alpha, a_opt_state), actor_loss = jax.lax.cond(
@@ -744,7 +665,7 @@ def single_run(config: dict):
 
             return (new_actor_state, new_qf_state, log_alpha, a_opt_state, n_updates + 1, actor_loss, u_key), (qf_loss, actor_loss, qf1_pred_a_values, alpha)
 
-    
+
         def scanned_update(carry):
             carry, metrics = jax.lax.scan(do_update, carry, None, length=gradient_steps)
             qf_l, act_l, qf1_v, a_val = metrics
@@ -754,7 +675,7 @@ def single_run(config: dict):
             replay_buffer.can_sample(buffer_state),
             lambda c: scanned_update(c),
             lambda c: (c, (jnp.array(0.0), jnp.array(0.0), jnp.array(0.0), jnp.array(0.0))),
-            (actor_state, qf_state, log_alpha, a_opt_state, n_updates, last_actor_loss, rng), 
+            (actor_state, qf_state, log_alpha, a_opt_state, n_updates, last_actor_loss, rng),
         )
 
         if use_target_network:
@@ -789,8 +710,6 @@ def single_run(config: dict):
                             config,
                             crossq_carry[0],
                             crossq_carry[1]
-                            #{"params": crossq_carry[0].params, "batch_stats": crossq_carry[0].batch_stats},
-                            #{"params": crossq_carry[1].params, "batch_stats": crossq_carry[1].batch_stats}
                          ]
                     )
                 )
@@ -827,7 +746,7 @@ def single_run(config: dict):
             metrics[mod_label] = np.mean(jax.device_get(episodic_returns))
             wandb.log({f"eval/episodic_return_{mod_label}": np.mean(jax.device_get(episodic_returns))}, step=step_count)
 
-            if config["CAPTURE_VIDEO"]: 
+            if config["CAPTURE_VIDEO"]:
                 clean_renderer = jaxatari.make(config["ENV_ID"], mods=mods_cfg).renderer
                 frames = jax.vmap(clean_renderer.render)(env_states)
                 frames = jnp.transpose(frames, (0, 3, 1, 2))
@@ -852,28 +771,28 @@ def single_run(config: dict):
     _ = jax.block_until_ready(scanned_steps(crossq_carry))
     end_compile = time.perf_counter()
     print(f"[crossq] compilation time: {end_compile - start_compile:.2f}s")
-    
+
     steps_per_iteration = config.get("NUM_ENVS") * config.get("TRAIN_FREQUENCY") * config.get("SCAN_STEPS")
     rtpt = RTPT(name_initials=config["NAME_INITIALS"], experiment_name=run_name, max_iterations=config.get("TOTAL_TIMESTEPS") // steps_per_iteration)
     rtpt.start()
     run_time = time.perf_counter()
-    
+
     print(f"[crossq] starting training for {config.get('TOTAL_TIMESTEPS')} steps...")
     while global_step < config.get("TOTAL_TIMESTEPS"):
         rtpt.step()
         iteration = global_step // steps_per_iteration
         if config["EVAL_DURING_TRAIN"] and iteration > 0 and iteration % config["EVAL_EVERY"] == 0:
-           save_and_eval(global_step) 
-           
+           save_and_eval(global_step)
+
         iteration_time_start = time.perf_counter()
         result = scanned_steps(crossq_carry)
         crossq_carry, (infos, qf_loss, actor_loss, qf1_val, alpha) = result
         global_step = int(crossq_carry[-1])
-        
+
         print(f"[crossq] iteration {iteration} | step {global_step} | avg_return {infos['returned_episode_returns'][-1].mean():.2f} | qf_loss {qf_loss[-1]:.4f} | act_loss {actor_loss[-1]:.4f} | SPS {int(global_step / (time.perf_counter() - run_time))}")
-        
+
         metrics = {
-            "charts/avg_episodic_return": infos["returned_episode_returns"][-1].mean(), 
+            "charts/avg_episodic_return": infos["returned_episode_returns"][-1].mean(),
             "charts/avg_episodic_length": infos["returned_episode_lengths"][-1].mean(),
             "losses/qf_loss": qf_loss[-1].item(),
             "losses/actor_loss": actor_loss[-1].item(),
