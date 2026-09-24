@@ -328,7 +328,7 @@ class Pixel_Critic(nn.Module):
         )(x, step)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
-        x = nn.Dense(1024, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+        x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
@@ -370,14 +370,14 @@ class MLP_Critic(nn.Module):
 
     @nn.compact
     def __call__(self, x, step, train = False):
-        x = nn.Dense(1024, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+        x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=0,
         )(x, step)
         x = nn.relu(x)
-        x = nn.Dense(1024, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+        x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
