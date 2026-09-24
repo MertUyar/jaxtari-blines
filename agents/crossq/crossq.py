@@ -25,6 +25,7 @@ from jaxatari.wrappers import (
 from agents.crossq.crossq_eval import evaluate
 from rtpt import RTPT
 
+# CrossQ for Atari performs poorly, it either doesn't converge or converge worse than SAC.
 
 def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=False):
     assert mods is None or isinstance(mods, list), "mods must be None or a list of strings"
@@ -291,13 +292,6 @@ class Pixel_Actor_Discrete(nn.Module):
             network=1,
         )(x, step)
         x = nn.relu(x)
-        x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0)  )(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
-        x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
         action_probs = jax.nn.softmax(x, axis=-1)
@@ -341,13 +335,6 @@ class Pixel_Critic(nn.Module):
             network=1,
         )(x, step)
         x = nn.relu(x)
-        x = nn.Dense(1024, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0)  )(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
-        x = nn.relu(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         return x
 
@@ -357,14 +344,14 @@ class MLP_Actor_Discrete(nn.Module):
 
     @nn.compact
     def __call__(self, x, step, key, train=False):
-        x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+        x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,
             network=1,
         )(x, step)
         x = nn.relu(x)
-        x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+        x = nn.Dense(256, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
             configs=self.configs,

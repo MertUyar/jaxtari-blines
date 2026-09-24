@@ -20,6 +20,9 @@ def main(config):
         elif merged_config["ALG"] == "RAINBOW":  
             from agents.rainbow.rainbow import single_run  
             run_fn = single_run
+        elif merged_config["ALG"] == "DDPG":  
+            from agents.crossq.crossq import single_run  
+            run_fn = single_run
         elif merged_config["ALG"] == "TD3":  
             from agents.td3.td3 import single_run  
             run_fn = single_run

@@ -22,7 +22,7 @@ from jaxatari.wrappers import (
     FlattenObservationWrapper,
     LogWrapper
 )
-from agents.td3.td3_eval import evaluate
+from agents.ddpg.ddpg_eval import evaluate
 from rtpt import RTPT
 
 # Gumbell softmax is used to make it compatible with discrete actions because gradients are calculated through samples.
@@ -135,7 +135,7 @@ class MLP_Critic(nn.Module):
         return x
 
 
-class TD3TrainState(TrainState):
+class DDPGTrainState(TrainState):
     target_params: flax.core.FrozenDict
 
 
@@ -186,7 +186,7 @@ def single_run(config: dict):
         obs_shape = obs_shape[:-1]
 
     num_envs = config["NUM_ENVS"]
-    # if -1: we do as many gradient steps as collected samples (stable_baselines3 behavior), gradient_steps = 1  original TD3 paper
+    # if -1: we do as many gradient steps as collected samples (stable_baselines3 behavior)
     gradient_steps = num_envs * config.get("TRAIN_FREQUENCY", 4) if config.get("GRADIENT_STEPS", 1) == -1 else config.get("GRADIENT_STEPS", 1) 
 
     @jax.jit
@@ -203,13 +203,12 @@ def single_run(config: dict):
     gamma = config.get("GAMMA", 0.99)
     tau = config.get("TAU", 1.0)
     batch_size = config.get("BATCH_SIZE", 64)
-    policy_update_frequency = config.get("POLICY_UPDATE_FREQUENCY", 2)
     target_update_frequency = config.get("TARGET_UPDATE_FREQUENCY", 8000)
     learning_starts = config.get("LEARNING_STARTS", 20000)
     steps_per_update = config.get("TRAIN_FREQUENCY", 4) * config.get("NUM_ENVS", 1)
 
 
-    key, actor_key, qf1_key, qf2_key = jax.random.split(key, 4)
+    key, actor_key, qf_key = jax.random.split(key, 3)
     
     if config.get("PIXEL_BASED", True):
         actor_net = Pixel_Actor_Discrete(action_dim=action_dim)
@@ -221,22 +220,16 @@ def single_run(config: dict):
     dummy_obs = jnp.zeros((1, *obs_shape))
     dummy_act = jnp.zeros((1, action_dim))
 
-    actor_state = TD3TrainState.create(
+    actor_state = DDPGTrainState.create(
         apply_fn=actor_net.apply,
         params=actor_net.init(actor_key, dummy_obs),
         target_params=actor_net.init(actor_key, dummy_obs),
         tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4),
     )
-    qf1_state = TD3TrainState.create(
+    qf_state = DDPGTrainState.create(
         apply_fn=critic_net.apply,
-        params=critic_net.init(qf1_key, dummy_obs, dummy_act),
-        target_params=critic_net.init(qf1_key, dummy_obs, dummy_act),
-        tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4),
-    )
-    qf2_state = TD3TrainState.create(
-        apply_fn=critic_net.apply,
-        params=critic_net.init(qf2_key, dummy_obs, dummy_act),
-        target_params=critic_net.init(qf2_key, dummy_obs, dummy_act),
+        params=critic_net.init(qf_key, dummy_obs, dummy_act),
+        target_params=critic_net.init(qf_key, dummy_obs, dummy_act),
         tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4),
     )
 
@@ -277,7 +270,7 @@ def single_run(config: dict):
         
         return y_hard, y_soft, action_idx
 
-    def full_td3_step(actor_state, qf1_state, qf2_state, buffer_state, env_state, obs, rng, global_step, temperature):
+    def full_ddpg_step(actor_state, qf_state, buffer_state, env_state, obs, rng, global_step, temperature):
         
         def take_action(carry, _):
             actor_state, buffer_state, env_state, obs, global_step, rng = carry
@@ -309,7 +302,7 @@ def single_run(config: dict):
         )
 
         def do_update(update_carry, _):
-            u_actor_state, u_qf1_state, u_qf2_state, u_key, gradient_step_counter = update_carry
+            u_actor_state, u_qf_state, u_key = update_carry
             u_key, sample_key, sample_key2, sample_key3 = jax.random.split(u_key, 4)
 
             batch = replay_buffer.sample(buffer_state, sample_key).experience
@@ -319,67 +312,91 @@ def single_run(config: dict):
             b_don = batch.first.done
             b_nobs = batch.second.obs
 
-            #Discrete
-            next_actions_hard, _, _ = gumbel_softmax_sample(u_actor_state.apply_fn(u_actor_state.target_params, b_nobs), sample_key2, temperature=temperature)
+            # Discrete
+            next_actions_hard, _, _ = gumbel_softmax_sample(
+                u_actor_state.apply_fn(
+                    u_actor_state.target_params,
+                    b_nobs,
+                ),
+                sample_key2,
+                temperature=temperature,
+            )
 
-            q1_next_target = u_qf1_state.apply_fn(u_qf1_state.target_params, b_nobs, next_actions_hard).reshape(-1)
-            q2_next_target = u_qf2_state.apply_fn(u_qf2_state.target_params, b_nobs, next_actions_hard).reshape(-1)
-            min_q_next_target = jnp.minimum(q1_next_target, q2_next_target)
-            next_q_value = (b_rew.flatten() + (1.0 - b_don.flatten()) * gamma * min_q_next_target).reshape(-1)
+            q_next_target = u_qf_state.apply_fn(
+                u_qf_state.target_params,
+                b_nobs,
+                next_actions_hard,
+            ).reshape(-1)
+
+            next_q_value = (
+                b_rew.flatten()
+                + (1.0 - b_don.flatten()) * gamma * q_next_target
+            ).reshape(-1)
             next_q_value = jax.lax.stop_gradient(next_q_value)
 
             def qf_loss_fn(qf_params, qf_state):
-                b_act_onehot = jax.nn.one_hot(b_act,num_classes=action_dim)
-                qf_pred = qf_state.apply_fn(qf_params, b_obs, b_act_onehot).reshape(-1)
+                b_act_onehot = jax.nn.one_hot(b_act, num_classes=action_dim)
+                qf_pred = qf_state.apply_fn(
+                    qf_params,
+                    b_obs,
+                    b_act_onehot,
+                ).reshape(-1)
                 qf_loss = jnp.mean((qf_pred - next_q_value) ** 2)
                 return qf_loss, qf_pred.mean()
 
-            (qf1_loss, qf1_val), grads1 = jax.value_and_grad(qf_loss_fn, has_aux=True)(u_qf1_state.params, u_qf1_state)
-            (qf2_loss, qf2_val), grads2 = jax.value_and_grad(qf_loss_fn, has_aux=True)(u_qf2_state.params, u_qf2_state)
-            
-            new_qf1_state = u_qf1_state.apply_gradients(grads=grads1)
-            new_qf2_state = u_qf2_state.apply_gradients(grads=grads2)
+            (qf_loss, qf_val), qf_grads = jax.value_and_grad(
+                qf_loss_fn,
+                has_aux=True,
+            )(u_qf_state.params, u_qf_state)
 
-            # Delayed Policy Update
-            def perform_actor_update(c):
-                c_actor, c_qf1 = c
-                def actor_loss_fn(actor_params):
-                    gumbel_sample , _, _ = gumbel_softmax_sample(c_actor.apply_fn(actor_params, b_obs), sample_key3, temperature=temperature)
-                    return -c_qf1.apply_fn(c_qf1.params, b_obs, gumbel_sample).mean()
-                
-                actor_loss, actor_grads = jax.value_and_grad(actor_loss_fn)(c_actor.params)
-                updated_actor = c_actor.apply_gradients(grads=actor_grads)
-        
-                return updated_actor, actor_loss
-            
-            def skip_actor_update(c):
-                c_actor, c_qf1 = c
-                def actor_loss_fn(actor_params):
-                    gumbel_sample , _, _ = gumbel_softmax_sample(c_actor.apply_fn(actor_params, b_obs), sample_key3, temperature=temperature)
-                    return -c_qf1.apply_fn(c_qf1.params, b_obs, gumbel_sample).mean()
-                return c_actor, actor_loss_fn(c_actor.params)
+            new_qf_state = u_qf_state.apply_gradients(grads=qf_grads)
 
-            u_actor_state, actor_loss = jax.lax.cond(
-                gradient_step_counter % policy_update_frequency == 0,
-                perform_actor_update,
-                skip_actor_update,
-                (u_actor_state, new_qf1_state)
+            # Update the actor on every gradient step.
+            def actor_loss_fn(actor_params):
+                gumbel_sample, _, _ = gumbel_softmax_sample(
+                    u_actor_state.apply_fn(actor_params, b_obs),
+                    sample_key3,
+                    temperature=temperature,
+                )
+                return -new_qf_state.apply_fn(
+                    new_qf_state.params,
+                    b_obs,
+                    gumbel_sample,
+                ).mean()
+
+            actor_loss, actor_grads = jax.value_and_grad(actor_loss_fn)(
+                u_actor_state.params
             )
+            new_actor_state = u_actor_state.apply_gradients(grads=actor_grads)
 
-            
-            return (u_actor_state, new_qf1_state, new_qf2_state, u_key, gradient_step_counter + 1), (qf1_loss, qf2_loss, actor_loss, qf1_val)
+            return (
+                new_actor_state,
+                new_qf_state,
+                u_key,
+            ), (qf_loss, actor_loss, qf_val)
 
-        
         def scanned_update(carry):
-            carry, metrics = jax.lax.scan(do_update, carry, None, length=gradient_steps)
-            qf1_l, qf2_l, act_l, qf1_v = metrics
-            return carry, (qf1_l[-1], qf2_l[-1], act_l[-1], qf1_v[-1])
+            carry, metrics = jax.lax.scan(
+                do_update,
+                carry,
+                None,
+                length=gradient_steps,
+            )
+            qf_l, act_l, qf_v = metrics
+            return carry, (qf_l[-1], act_l[-1], qf_v[-1])
 
-        (actor_state, qf1_state, qf2_state, rng, gradient_step_counter), (qf1_loss, qf2_loss, actor_loss, qf1_val) = jax.lax.cond(
+        (actor_state, qf_state, rng), (qf_loss, actor_loss, qf_val) = jax.lax.cond(
             replay_buffer.can_sample(buffer_state),
             lambda c: scanned_update(c),
-            lambda c: (c, (jnp.array(0.0), jnp.array(0.0), jnp.array(0.0), jnp.array(0.0))),
-            (actor_state, qf1_state, qf2_state, rng, global_step // steps_per_update), 
+            lambda c: (
+                c,
+                (
+                    jnp.array(0.0),
+                    jnp.array(0.0),
+                    jnp.array(0.0),
+                ),
+            ),
+            (actor_state, qf_state, rng),
         )
 
         update_target_flag = jnp.logical_and(
@@ -388,28 +405,33 @@ def single_run(config: dict):
         )
                 
         def update_target_networks(c):
-            c_actor, c_qf1, c_qf2 = c
+            c_actor, c_qf = c
             updated_actor = c_actor.replace(
-                target_params=optax.incremental_update(c_actor.params, c_actor.target_params, tau)
+                target_params=optax.incremental_update(
+                    c_actor.params,
+                    c_actor.target_params,
+                    tau,
+                )
             )
-            updated_qf1 = c_qf1.replace(
-                target_params=optax.incremental_update(c_qf1.params, c_qf1.target_params, tau)
+            updated_qf = c_qf.replace(
+                target_params=optax.incremental_update(
+                    c_qf.params,
+                    c_qf.target_params,
+                    tau,
+                )
             )
-            updated_qf2 = c_qf2.replace(
-                target_params=optax.incremental_update(c_qf2.params, c_qf2.target_params, tau)
-            )
-            return updated_actor, updated_qf1, updated_qf2
+            return updated_actor, updated_qf
 
-        actor_state, qf1_state, qf2_state = jax.lax.cond(
+        actor_state, qf_state = jax.lax.cond(
             update_target_flag,
             update_target_networks,
             lambda c: c,
-            (actor_state, qf1_state, qf2_state)
+            (actor_state, qf_state),
         )
 
         # temperature = jnp.clip(1.0 - 0.8 * global_step / config["TOTAL_TIMESTEPS"], 0.2, 1.0,)
 
-        return (actor_state, qf1_state, qf2_state, buffer_state, next_env_state, next_obs, rng, global_step, temperature), (infos, qf1_loss, qf2_loss, actor_loss, qf1_val)
+        return (actor_state, qf_state, buffer_state, next_env_state, next_obs, rng, global_step, temperature), (infos, qf_loss, actor_loss, qf_val)
 
     def save_and_eval(step_count):
         if config.get("SAVE_PATH", "./models") is not None:
@@ -420,10 +442,9 @@ def single_run(config: dict):
                     flax.serialization.to_bytes(
                         [
                             config,
-                            td3_carry[0].params,
-                            td3_carry[1].params,
-                            td3_carry[2].params
-                         ]
+                            ddpg_carry[0].params,
+                            ddpg_carry[1].params,
+                        ]
                     )
                 )
             print(f"model saved to {model_path}")
@@ -467,28 +488,28 @@ def single_run(config: dict):
                 print(f"Video (eval) logged to wandb with {frames.shape[0]} frames ({mod_label}).")
         return metrics
 
-    print(f"[td3] start compile...")
+    print(f"[ddpg] start compile...")
     start_compile = time.perf_counter()
     global_step = jnp.array(0, dtype=jnp.int32)
     temperature = jnp.array(1.0)
-    td3_carry = (actor_state, qf1_state, qf2_state, buffer_state, _state, _obs, key, global_step, temperature)
+    ddpg_carry = (actor_state, qf_state, buffer_state, _state, _obs, key, global_step, temperature)
 
     @jax.jit
     def scanned_steps(carry):
         def step_fn(c, _):
-            return full_td3_step(*c)
+            return full_ddpg_step(*c)
         return jax.lax.scan(step_fn, carry, None, length=config.get("SCAN_STEPS", 1000))
 
-    _ = jax.block_until_ready(scanned_steps(td3_carry))
+    _ = jax.block_until_ready(scanned_steps(ddpg_carry))
     end_compile = time.perf_counter()
-    print(f"[td3] compilation time: {end_compile - start_compile:.2f}s")
+    print(f"[ddpg] compilation time: {end_compile - start_compile:.2f}s")
     
     steps_per_iteration = config.get("NUM_ENVS") * config.get("TRAIN_FREQUENCY") * config.get("SCAN_STEPS")
     rtpt = RTPT(name_initials=config["NAME_INITIALS"], experiment_name=run_name, max_iterations=config.get("TOTAL_TIMESTEPS") // steps_per_iteration)
     rtpt.start()
     run_time = time.perf_counter()
     
-    print(f"[td3] starting training for {config.get('TOTAL_TIMESTEPS')} steps...")
+    print(f"[ddpg] starting training for {config.get('TOTAL_TIMESTEPS')} steps...")
     while global_step < config.get("TOTAL_TIMESTEPS"):
         rtpt.step()
         iteration = global_step // steps_per_iteration
@@ -496,19 +517,18 @@ def single_run(config: dict):
            save_and_eval(global_step) 
            
         iteration_time_start = time.perf_counter()
-        result = scanned_steps(td3_carry)
-        td3_carry, (infos, qf1_loss, qf2_loss, actor_loss, qf1_val) = result
-        global_step = int(td3_carry[-2])
+        result = scanned_steps(ddpg_carry)
+        ddpg_carry, (infos, qf_loss, actor_loss, qf_val) = result
+        global_step = int(ddpg_carry[-2])
         
-        print(f"[td3] iteration {iteration} | step {global_step} | avg_return {infos['returned_episode_returns'][-1].mean():.2f} | qf1_loss {qf1_loss[-1]:.4f} | act_loss {actor_loss[-1]:.4f} | SPS {int(global_step / (time.perf_counter() - run_time))}")
+        print(f"[ddpg] iteration {iteration} | step {global_step} | avg_return {infos['returned_episode_returns'][-1].mean():.2f} | qf_loss {qf_loss[-1]:.4f} | act_loss {actor_loss[-1]:.4f} | SPS {int(global_step / (time.perf_counter() - run_time))}")
         
         metrics = {
             "charts/avg_episodic_return": infos["returned_episode_returns"][-1].mean(), 
             "charts/avg_episodic_length": infos["returned_episode_lengths"][-1].mean(),
-            "losses/qf1_loss": qf1_loss[-1].item(),
-            "losses/qf2_loss": qf2_loss[-1].item(),
+            "losses/qf_loss": qf_loss[-1].item(),
             "losses/actor_loss": actor_loss[-1].item(),
-            "losses/qf1_values": qf1_val[-1].item(), 
+            "losses/qf_values": qf_val[-1].item(),
             "charts/SPS": int(global_step / (time.perf_counter() - run_time)),
             "charts/SPS_update": int(config["NUM_ENVS"] * config["TRAIN_FREQUENCY"] * config["SCAN_STEPS"]  / (time.perf_counter() - iteration_time_start)),
             "charts/time": time.perf_counter() - run_time,
